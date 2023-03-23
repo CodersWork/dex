@@ -41,6 +41,8 @@ require (
 	gopkg.in/square/go-jose.v2 v2.6.0
 )
 
+require github.com/pquerna/cachecontrol v0.1.0 // indirect
+
 require (
 	ariga.io/atlas v0.10.2-0.20230427182402-87a07dfb83bf // indirect
 	cloud.google.com/go/compute v1.23.0 // indirect
@@ -52,6 +54,7 @@ require (
 	github.com/apparentlymart/go-textseg/v13 v13.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/coreos/go-oidc v2.2.1+incompatible
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
