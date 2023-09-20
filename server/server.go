@@ -44,6 +44,7 @@ import (
 	"github.com/dexidp/dex/connector/oidc"
 	"github.com/dexidp/dex/connector/openshift"
 	"github.com/dexidp/dex/connector/saml"
+	"github.com/dexidp/dex/connector/wechat"
 	"github.com/dexidp/dex/pkg/log"
 	"github.com/dexidp/dex/storage"
 	"github.com/dexidp/dex/web"
@@ -581,6 +582,7 @@ var ConnectorsConfig = map[string]func() ConnectorConfig{
 	// Keep around for backwards compatibility.
 	"samlExperimental": func() ConnectorConfig { return new(saml.Config) },
 	"dingtalk":         func() ConnectorConfig { return new(dingtalk.Config) },
+	"wechat":           func() ConnectorConfig { return new(wechat.Config) },
 }
 
 // openConnector will parse the connector config and open the connector.
