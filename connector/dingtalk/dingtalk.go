@@ -4,11 +4,17 @@ package dingtalk
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -87,6 +93,7 @@ type dingtalkConnector struct {
 	httpClient  *http.Client
 	// if set to true will use the user's handle rather than their numeric id as the ID
 	useLoginAsID bool
+	accessToken  string
 }
 
 func (c *dingtalkConnector) oauth2Config(scopes connector.Scopes) *oauth2.Config {
@@ -148,6 +155,9 @@ func (c *dingtalkConnector) HandleCallback(s connector.Scopes, r *http.Request) 
 		return identity, &oauth2Error{errType, q.Get("error_description")}
 	}
 
+	if q.Has("ios_app") {
+		return c.identityByiOS(q.Get("authCode"))
+	}
 	oauth2Config := c.oauth2Config(s)
 
 	var token oauth2.Token
@@ -203,7 +213,7 @@ func (c *dingtalkConnector) identity(ctx context.Context, s connector.Scopes, to
 	// if user do not have a email address, use mobile number instead.
 	email := user.Email
 	if email == "" {
-		email = user.Mobile + "@mira.net"
+		email = user.Mobile + "@Dingtalk"
 	}
 
 	identity = connector.Identity{
@@ -333,4 +343,177 @@ func (c *dingtalkConnector) user(ctx context.Context, client *http.Client, token
 // corpid scope refer: https://open.dingtalk.com/document/orgapp/obtain-identity-credentials
 func (c *dingtalkConnector) getGroups(ctx context.Context, client *http.Client, groupScope bool, userLogin string) ([]string, error) {
 	return nil, nil
+}
+
+func (c *dingtalkConnector) identityByiOS(authCode string) (identity connector.Identity, err error) {
+	err = c.GetAccesstoken()
+	if err != nil {
+		return identity, err
+	}
+	unionid, err := c.GetUnionIDByCode(authCode)
+	if err != nil {
+		return identity, err
+	}
+	userid, err := c.GetUserIDByUnionID(unionid)
+	if err != nil {
+		return identity, err
+	}
+
+	urlEndpoint, err := url.Parse("https://oapi.dingtalk.com/topapi/v2/user/get")
+	if err != nil {
+		return identity, err
+	}
+
+	query := url.Values{}
+	query.Set("access_token", c.accessToken)
+
+	urlEndpoint.RawQuery = query.Encode()
+	urlPath := urlEndpoint.String()
+
+	resp, err := http.PostForm(urlPath, url.Values{"userid": {userid}})
+	if err != nil {
+		return identity, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return identity, err
+	}
+
+	var rdata map[string]interface{}
+	err = json.Unmarshal(body, &rdata)
+	if err != nil {
+		return identity, err
+	}
+
+	errcode := rdata["errcode"].(float64)
+	if errcode != 0 {
+		return identity, fmt.Errorf("登录错误: %.0f, %s", errcode, rdata["errmsg"].(string))
+	}
+
+	userinfo := rdata["result"].(map[string]interface{})
+	username := userinfo["name"].(string)
+	email := userinfo["mobile"].(string) + "@DingTalk"
+
+	identity = connector.Identity{
+		UserID:            unionid,
+		Username:          username,
+		PreferredUsername: username,
+		Email:             email,
+		EmailVerified:     true,
+	}
+	identity.Groups = append([]string{"吉大正元"}, identity.Groups...)
+	return identity, nil
+}
+func (c *dingtalkConnector) GetUserIDByUnionID(unionid string) (string, error) {
+	urlEndpoint, err := url.Parse("https://oapi.dingtalk.com/topapi/user/getbyunionid")
+	if err != nil {
+		return "", err
+	}
+
+	query := url.Values{}
+	query.Set("access_token", c.accessToken)
+	urlEndpoint.RawQuery = query.Encode()
+	urlPath := urlEndpoint.String()
+
+	resp, err := http.PostForm(urlPath, url.Values{"unionid": {unionid}})
+	if err != nil {
+		return "", err
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	var rdata map[string]interface{}
+	err = json.Unmarshal(body, &rdata)
+	if err != nil {
+		return "", err
+	}
+
+	errcode := rdata["errcode"].(float64)
+	if errcode != 0 {
+		return "", fmt.Errorf("登录错误: %.0f, %s", errcode, rdata["errmsg"].(string))
+	}
+
+	result := rdata["result"].(map[string]interface{})
+	if result["contact_type"].(float64) != 0 {
+		return "", errors.New("该用户不属于企业内部员工，无法登录。")
+	}
+	userid := result["userid"].(string)
+	return userid, nil
+}
+
+func (c *dingtalkConnector) GetAccesstoken() (err error) {
+
+	url := fmt.Sprintf("https://oapi.dingtalk.com/gettoken?appkey=%s&appsecret=%s", c.appID, c.appSecret)
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var i map[string]interface{}
+	err = json.Unmarshal(body, &i)
+	if err != nil {
+		return err
+	}
+
+	if i["errcode"].(float64) == 0 {
+		c.accessToken = i["access_token"].(string)
+		return nil
+	}
+	return errors.New("accesstoken获取错误:" + i["errmsg"].(string))
+}
+
+func (c *dingtalkConnector) GetUnionIDByCode(code string) (string, error) {
+	var resp *http.Response
+	//服务端通过临时授权码获取授权用户的个人信息
+	timestamp := strconv.FormatInt(time.Now().UnixNano()/1000000, 10) // 毫秒时间戳
+	signature := c.getSignature(timestamp)
+	urlPath := fmt.Sprintf(
+		"https://oapi.dingtalk.com/sns/getuserinfo_bycode?accessKey=%s&timestamp=%s&signature=%s",
+		c.appID, timestamp, signature)
+
+	param := struct {
+		Tmp_auth_code string `json:"tmp_auth_code"`
+	}{code}
+	paraByte, _ := json.Marshal(param)
+	paraString := string(paraByte)
+
+	resp, err := http.Post(urlPath, "application/json;charset=UTF-8", strings.NewReader(paraString))
+	if err != nil {
+		return "", err
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	var rdata map[string]interface{}
+	err = json.Unmarshal(body, &rdata)
+	if err != nil {
+		return "", err
+	}
+	errcode := rdata["errcode"].(float64)
+	if errcode != 0 {
+		return "", fmt.Errorf("登录错误: %.0f, %s", errcode, rdata["errmsg"].(string))
+	}
+	unionid := rdata["user_info"].(map[string]interface{})["unionid"].(string)
+	return unionid, nil
+}
+
+// 钉钉签名算法实现
+func (c *dingtalkConnector) getSignature(timestamp string) string {
+	h := hmac.New(sha256.New, []byte(c.appSecret))
+	h.Write([]byte(timestamp))
+	sum := h.Sum(nil) // 二进制流
+	tmpMsg := base64.StdEncoding.EncodeToString(sum)
+
+	uv := url.Values{}
+	uv.Add("0", tmpMsg)
+
+	return uv.Encode()[2:]
 }
