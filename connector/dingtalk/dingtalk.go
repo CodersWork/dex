@@ -213,7 +213,7 @@ func (c *dingtalkConnector) identity(ctx context.Context, s connector.Scopes, to
 	// if user do not have a email address, use mobile number instead.
 	email := user.Email
 	if email == "" {
-		email = user.Mobile + "@Dingtalk"
+		email = user.Mobile + "@DingTalk"
 	}
 
 	identity = connector.Identity{
